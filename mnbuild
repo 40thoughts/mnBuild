@@ -1,0 +1,86 @@
+#!/bin/bash
+
+appDir="$HOME/Projets/mnbuild"
+tmpDir="$appDir/.tmp"
+fileName="Dockerfile"
+lvl="0"
+checkRepo="^[a-z0-9/:-]*[^/]*$"
+repoLink="^[a-z0-9-]*/[a-z0-9-]*$"
+repoUser="[/+]"
+repoTag="[a-z0-9/-]*:[a-z0-9-]*$"
+appFile="apps"
+
+main ()
+{
+    repo=$1
+    if [[ $repo =~ $checkRepo ]];
+    then
+        if [[ $repo =~ $repoUser ]];
+        then
+            if [[ $repo =~ $repoTag ]];
+            then
+                repo=$(echo $repo | cut -d ':' -f1)
+            fi
+            echo "Downloading $repo/Dockerfile"
+            downDFile $repo
+        else
+            echo Got the base image : $repo
+            from=$(echo $repo | cut -d ':' -f1)
+            tag=$(echo $repo | cut -d ':' -f2)
+        fi
+    else
+        echo "Repository name incorrect or missing"
+    fi
+}
+
+downDFile ()
+{
+    lvl=`expr $lvl + 1`
+    wget -q https://registry.hub.docker.com/u/$1/dockerfile/raw -O - | sed 's/&quot;/\"/g' | sed 's/&amp;/\&/g' > $tmpDir/$fileName$lvl
+    checkAddFiles
+    compare
+}
+
+checkAddFiles ()
+{
+    file=$(cat $tmpDir/$fileName$lvl | grep "ADD" | cut -d ' ' -f2)
+    echo $file > $tmpDir/$appFile
+    gitLink=$(wget -q https://registry.hub.docker.com/u/$repo/dockerfile/ -O - | grep -o "https://github.com/[a-zA-Z0-9/-]*.git")
+    while read line
+    do
+        fileLink=$(echo "$gitLink" | sed -e 's/.git$/'"\/master\/$file"'/g' | sed -e 's/github\.com/'"raw.githubusercontent.com"'/g')
+        wget -q $fileLink -P "$appDir/"
+    done < $tmpDir/$appFile
+    echo $repo
+}
+
+compare ()
+{
+    repo=$(cat $tmpDir/$fileName$lvl | grep "FROM" | cut -d ' ' -f2)
+    main $repo
+}
+
+merge ()
+{
+    if [ "$lvl" -ge "1" ];
+    then
+        cat $tmpDir/$fileName$lvl | sed '/^FROM/d' | sed '/^MAINTAINER/d' >> $tmpDir/$fileName
+        lvl=`expr $lvl - 1`
+        merge
+    else
+        tac $tmpDir/$fileName > $tmpDir/tmp$fileName
+        echo "MAINTAINER $maintainer" >> $tmpDir/tmp$fileName
+        echo "FROM $from:$tag" >> $tmpDir/tmp$fileName
+        tac $tmpDir/tmp$fileName > $appDir/$fileName
+        rm $tmpDir/tmp$fileName
+        rm -rf $tmpDir
+    fi
+}
+
+mkdir $tmpDir
+main $1
+maintainer=$(cat $tmpDir/$fileName$lvl | grep "MAINTAINER" | head -n 1 | cut -d ' ' -f2)
+merge
+sudo docker build --rm $appDir
+
+exit 0
